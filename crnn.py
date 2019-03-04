@@ -32,7 +32,7 @@ class CRNN(nn.HybridBlock):
 
         self.cnn = nn.HybridSequential()
         self.cnn.add(*blocks)
-        self.lstm = mx.gluon.rnn.LSTM(hidden_size=512, num_layers=2, layout='NTC',
+        self.lstm = mx.gluon.rnn.LSTM(hidden_size=256, num_layers=2, layout='NTC',
                                       dropout=0.5, bidirectional=True)
         self.fc = nn.Dense(units=n_out, flatten=False)
 
@@ -128,7 +128,7 @@ class SentenceAccuMetric(mx.metric.EvalMetric):
         self.num_inst += preds.shape[0]
 
 
-def train_crnn(net, train_dataset, val_dataset=None, gpus=[7], base_lr=1e-3, momentum=.9, wd=1e-4, log_interval=50):
+def train_crnn(net, train_dataset, val_dataset=None, gpus=[8], base_lr=1e-3, momentum=.9, wd=1e-4, log_interval=50):
     criterion = mx.gluon.loss.CTCLoss(layout='NTC', label_layout='NT')
     train_loader = mx.gluon.data.DataLoader(train_dataset, shuffle=True, batch_size=128, num_workers=16)
     if val_dataset is not None:
@@ -166,7 +166,7 @@ def train_crnn(net, train_dataset, val_dataset=None, gpus=[7], base_lr=1e-3, mom
             metric.update(None, preds=loss)
             acc_metric.update(labels=label, preds=y)
             step += 1
-            if step == 10000:
+            if step == 40000:
                 trainer.set_learning_rate(base_lr * 0.1)
             if n_batch % 1000 == 0:
                 save_path = "output/weight-{}-{}-{:.3f}.params".format(n_epoch, n_batch, acc_metric.get()[1])
@@ -188,7 +188,29 @@ if __name__ == '__main__':
     # print(da.max_sentences_len())
     # da.viz()
     # import tqdm
+
     logging.basicConfig(level=logging.INFO)
     net = CRNN(n_out=6000)
-    net.initialize(init=mx.init.Normal())
+    # loading parameters from torch
+    if True:
+        import torch
+        params_torch = torch.load("/data3/zyx/project/ocr/Recognization/saved_models_all/params-25-514_0.912_0.83.pkl")
+        params_torch_keys = list(filter(lambda x: "tracked" not in x, params_torch.keys()))
+        params_mx_keys = list(net.collect_params().keys())
+        for k, mk in zip(params_torch_keys, params_mx_keys):
+            param = params_torch[k].data.cpu().numpy()
+            try:
+                if "conv0_weight" in mk:
+                    param = mx.nd.array(param)
+                    param = param.repeat(axis=1, repeats=3)
+                net.collect_params()[mk]._load_init(mx.nd.array(param), ctx=mx.cpu())
+            except Exception as e:
+                logging.exception(e)
+                logging.warning("trying to restore {} from {} failed.".format(k, mk))
+                if "weight" in mk:
+                    net.collect_params()[mk].initialize(init=mx.init.Normal())
+                elif "bias" in mk:
+                    net.collect_params()[mk].initialize(init=mx.init.Zero())
+
+    # net.initialize(init=mx.init.Normal())
     train_crnn(net, CRNNDataset(max_sentence_length_pad=62))
