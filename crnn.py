@@ -111,6 +111,23 @@ class CRNNDataset(object):
         return max(map(len, self.anno[:, 1]))
 
 
+class SentenceAccuMetric(mx.metric.EvalMetric):
+    def update(self, labels, preds):
+        # type:(mx.nd.NDArray, mx.nd.NDArray)-> None
+        # labels: N x T, preds: N x T X C
+        blank_word = preds.shape[2] - 1
+        labels = labels.asnumpy().astype('i')
+        preds = preds.argmax(axis=2).asnumpy().astype('i')
+        for p, l in zip(preds, labels):
+            p = p[np.where(p != blank_word)]
+            l = l[np.where(l != 0)]
+            p = list(p)
+            l = list(l)
+            if p == l:
+                self.sum_metric += 1.0
+        self.num_inst += preds.shape[0]
+
+
 def train_crnn(net, train_dataset, val_dataset=None, gpus=[7], base_lr=1e-3, momentum=.9, wd=1e-4, log_interval=50):
     criterion = mx.gluon.loss.CTCLoss(layout='NTC', label_layout='NT')
     train_loader = mx.gluon.data.DataLoader(train_dataset, shuffle=True, batch_size=128, num_workers=16)
@@ -127,10 +144,10 @@ def train_crnn(net, train_dataset, val_dataset=None, gpus=[7], base_lr=1e-3, mom
          # 'momentum': momentum,
          'clip_gradient': 5})
     metric = mx.metric.Loss(name="ctx_loss")
-    acc_metric = mx.metric.Accuracy(name="acc")
+    acc_metric = SentenceAccuMetric(name="accu")
     eval_metrics = mx.metric.CompositeEvalMetric()
     eval_metrics.add(metric)
-    # eval_metrics.add(acc_metric)
+    eval_metrics.add(acc_metric)
     btic = time.time()
     step = 0
     for n_epoch in range(100):
@@ -147,21 +164,22 @@ def train_crnn(net, train_dataset, val_dataset=None, gpus=[7], base_lr=1e-3, mom
             ag.backward(loss)
             trainer.step(batch_size=1)
             metric.update(None, preds=loss)
+            acc_metric.update(labels=label, preds=y)
             step += 1
             if step == 10000:
                 trainer.set_learning_rate(base_lr * 0.1)
-            # acc_metric.update(labels=label.reshape((-1,)), preds=y.reshape((-1, y.shape[2])))
+            if n_batch % 1000 == 0:
+                save_path = "output/weight-{}-{}-{:.3f}.params".format(n_epoch, n_batch, acc_metric.get()[1])
+                net.collect_params().save(save_path)
+                trainer.save_states(save_path + ".trainer")
             if n_batch % log_interval == 0:
-                msg = ','.join(['{}={:.3f}'.format(w, v) for w, v in zip(*eval_metrics.get())])
+                msg = ','.join(['{}={:.5f}'.format(w, v) for w, v in zip(*eval_metrics.get())])
                 msg += ",lr={}".format(trainer.learning_rate)
                 msg += ",Speed: {:.3f} samples/sec".format((log_interval * data.shape[0]) / (time.time() - btic), )
                 logging.info("Epoch={},Step={},N_Batch={},".format(n_epoch, step, n_batch) + msg)
                 btic = time.time()
                 eval_metrics.reset()
-
-            if n_batch % 1000 == 0:
-                net.collect_params().save("output/weight-{}-{}.params".format(n_epoch, n_batch))
-
+                acc_metric.reset()
 
 
 if __name__ == '__main__':
