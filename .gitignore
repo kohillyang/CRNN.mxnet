@@ -1,2 +1,12 @@
 
 \.idea/
+
+\.settings/
+
+\.cproject
+
+\.project
+
+\.pydevproject
+
+output/
