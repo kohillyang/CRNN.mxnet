@@ -119,7 +119,15 @@ class SentenceAccuMetric(mx.metric.EvalMetric):
         labels = labels.asnumpy().astype('i')
         preds = preds.argmax(axis=2).asnumpy().astype('i')
         for p, l in zip(preds, labels):
+            lw = -1
+            sen = []
+            for w in p:
+                if lw != w:
+                    sen.append(w)
+                    lw = w
+            p = np.array(sen)
             p = p[np.where(p != blank_word)]
+            p = list(p)
             l = l[np.where(l != 0)]
             p = list(p)
             l = list(l)
@@ -161,6 +169,7 @@ def train_crnn(net, train_dataset, val_dataset=None, gpus=[8], base_lr=1e-3, mom
                 # loss = criterion(y.reshape(1, -1, y.shape[2]), label_cat.reshape(1, -1))  # type: mx.nd.NDArray
                 loss = criterion(y, label, mx.nd.array([y.shape[1]] * y.shape[0], ctx=y.context), label_lengths)
                 loss = loss / data.shape[0]
+                loss = loss.sum()
             ag.backward(loss)
             trainer.step(batch_size=1)
             metric.update(None, preds=loss)
@@ -192,7 +201,7 @@ if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
     net = CRNN(n_out=6000)
     # loading parameters from torch
-    if True:
+    if False:
         import torch
         params_torch = torch.load("/data3/zyx/project/ocr/Recognization/saved_models_all/params-25-514_0.912_0.83.pkl")
         params_torch_keys = list(filter(lambda x: "tracked" not in x, params_torch.keys()))
