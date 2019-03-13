@@ -76,12 +76,12 @@ class CRNNDataset(object):
             return self[(idx+1) % len(self)]
 
         def _get_w_idx(w):
-            try:
-                return self.words_dict[w]
-            except KeyError as e:
-                return 0
+#             try:
+            return self.words_dict[w]
+#             except KeyError as e:
+#                 return 0
 
-        def image_pad(img_ori, dshape=(48, 1024)):
+        def image_pad(img_ori, dshape=(48, 256)):
             fscale = min(dshape[0] / img_ori.shape[0], dshape[1] / img_ori.shape[1])
             img_resized = cv2.resize(img_ori, dsize=(0, 0), fx=fscale, fy=fscale)  # type: np.ndarray
             img_padded = np.zeros(shape=(int(dshape[0]), int(dshape[1]), 3), dtype=np.float32)
@@ -159,6 +159,8 @@ def train_crnn(net, train_dataset, val_dataset=None, gpus=[8], base_lr=1e-3, mom
     btic = time.time()
     step = 0
     for n_epoch in range(100):
+        if n_epoch == 1:
+            trainer.set_learning_rate(base_lr * 0.1)
         for n_batch, data_batch in enumerate(train_loader):
             data, label, label_lengths = [x.as_in_context(ctx_list[0]).astype('f') for x in data_batch]
             # label_cat = [l[:l_l.asscalar()] for l,l_l in zip(label, label_lengths)]
@@ -175,8 +177,6 @@ def train_crnn(net, train_dataset, val_dataset=None, gpus=[8], base_lr=1e-3, mom
             metric.update(None, preds=loss)
             acc_metric.update(labels=label, preds=y)
             step += 1
-            if step == 40000:
-                trainer.set_learning_rate(base_lr * 0.1)
             if n_batch % 1000 == 0:
                 save_path = "output/weight-{}-{}-{:.3f}.params".format(n_epoch, n_batch, acc_metric.get()[1])
                 net.collect_params().save(save_path)
@@ -221,5 +221,5 @@ if __name__ == '__main__':
                 elif "bias" in mk:
                     net.collect_params()[mk].initialize(init=mx.init.Zero())
 
-    # net.initialize(init=mx.init.Normal())
+    net.initialize(init=mx.init.Normal())
     train_crnn(net, CRNNDataset(max_sentence_length_pad=62))
