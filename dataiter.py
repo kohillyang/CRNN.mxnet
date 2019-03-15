@@ -20,11 +20,15 @@ class COCOCaption(object):
         file_name = img["file_name"]
         file_path = os.path.join(self.image_path, file_name)
 
-        return cv2.imread(file_path)[:, :, ::-1], [x["caption"] for x in anns]
+        return file_path, [x["caption"] for x in anns]
 
     def __len__(self):
         return len(self.image_ids)
 
+
+class COCOCaptionStage2(object):
+    def __init__(self):
+        self.dataset =
 
 if __name__ == '__main__':
     dataset = COCOCaption("/data3/zyx/yks/coco2017/annotations/captions_train2017.json",

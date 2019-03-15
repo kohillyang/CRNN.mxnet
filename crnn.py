@@ -28,7 +28,8 @@ class CRNN(nn.HybridBlock):
             if nlayer in (0, 1):
                 blocks.append(nn.MaxPool2D(pool_size=(2, 2), prefix="pooling{}".format(nlayer)))
             if nlayer in (3, 5):
-                blocks.append(nn.MaxPool2D(pool_size=(2, 2), strides=(2, 1), padding=(0, 1), prefix="pooling{}".format(nlayer)))
+                blocks.append(
+                    nn.MaxPool2D(pool_size=(2, 2), strides=(2, 1), padding=(0, 1), prefix="pooling{}".format(nlayer)))
 
         self.cnn = nn.HybridSequential()
         self.cnn.add(*blocks)
@@ -38,7 +39,7 @@ class CRNN(nn.HybridBlock):
 
     def hybrid_forward(self, F, x, *args, **kwargs):
         x = self.cnn(x)
-        # x = x.max(axis=2)  # n, c, t
+        x = x.max(axis=2)  # n, c, t
         x = x.squeeze()
         x = x.transpose(axes=(0, 2, 1))
         x = self.lstm(x)
@@ -47,8 +48,8 @@ class CRNN(nn.HybridBlock):
 
 
 class CRNNDataset(object):
-    def __init__(self, csv_path="/data1/zyx/ocr/Synthetic Chinese String Dataset/train_char.txt",
-                 image_path="/data1/zyx/ocr/Synthetic Chinese String Dataset/images",
+    def __init__(self, csv_path="/data2/zyx/yks/dianke_ocr/dataset/train_set.csv",
+                 image_path="/data2/zyx/yks/dianke_ocr/dataset/train_val_dataset",
                  max_sentence_length_pad=64,
                  words=None,
                  ):
@@ -61,6 +62,7 @@ class CRNNDataset(object):
             self.words.sort()
         else:
             self.words = words
+        print(len(self.words))
         # index of zero is reserved for unknown characters, and the last word is for blank.
         self.words_dict = {w: (i + 1) for i, w in enumerate(self.words)}
         self.image_path = image_path
@@ -70,18 +72,19 @@ class CRNNDataset(object):
         path, sentence = self.anno[idx]
         path = os.path.join(self.image_path, path)
         assert os.path.exists(path)
-        image = cv2.imread(path)[:, :, ::-1]
+        image = cv2.imread(path)
         if image is None:
             logging.warning("{} is None".format(path))
-            return self[(idx+1) % len(self)]
+            return self[(idx + 1) % len(self)]
+        image = image[:, :, ::-1]
 
         def _get_w_idx(w):
-#             try:
-            return self.words_dict[w]
-#             except KeyError as e:
-#                 return 0
+            try:
+                return self.words_dict[w]
+            except KeyError as e:
+                return 0
 
-        def image_pad(img_ori, dshape=(48, 256)):
+        def image_pad(img_ori, dshape=(48, 512)):
             fscale = min(dshape[0] / img_ori.shape[0], dshape[1] / img_ori.shape[1])
             img_resized = cv2.resize(img_ori, dsize=(0, 0), fx=fscale, fy=fscale)  # type: np.ndarray
             img_padded = np.zeros(shape=(int(dshape[0]), int(dshape[1]), 3), dtype=np.float32)
@@ -136,9 +139,9 @@ class SentenceAccuMetric(mx.metric.EvalMetric):
         self.num_inst += preds.shape[0]
 
 
-def train_crnn(net, train_dataset, val_dataset=None, gpus=[8], base_lr=1e-3, momentum=.9, wd=1e-4, log_interval=50):
+def train_crnn(net, train_dataset, val_dataset=None, gpus=[7], base_lr=1e-3, momentum=.9, wd=1e-4, log_interval=50):
     criterion = mx.gluon.loss.CTCLoss(layout='NTC', label_layout='NT')
-    train_loader = mx.gluon.data.DataLoader(train_dataset, shuffle=True, batch_size=128, num_workers=16)
+    train_loader = mx.gluon.data.DataLoader(train_dataset, shuffle=True, batch_size=16, num_workers=16)
     if val_dataset is not None:
         val_loader = mx.gluon.data.DataLoader(val_dataset, shuffle=True, batch_size=32)
     ctx_list = [mx.gpu(x) for x in gpus]
@@ -159,7 +162,7 @@ def train_crnn(net, train_dataset, val_dataset=None, gpus=[8], base_lr=1e-3, mom
     btic = time.time()
     step = 0
     for n_epoch in range(100):
-        if n_epoch == 1:
+        if n_epoch == 4:
             trainer.set_learning_rate(base_lr * 0.1)
         for n_batch, data_batch in enumerate(train_loader):
             data, label, label_lengths = [x.as_in_context(ctx_list[0]).astype('f') for x in data_batch]
@@ -191,6 +194,69 @@ def train_crnn(net, train_dataset, val_dataset=None, gpus=[8], base_lr=1e-3, mom
                 acc_metric.reset()
 
 
+def validate(net, val_dataset, gpus=[6]):
+    val_loader = mx.gluon.data.DataLoader(val_dataset, shuffle=True, batch_size=32)
+    ctx_list = [mx.gpu(x) for x in gpus]
+    net.collect_params().reset_ctx(ctx_list)
+    net.hybridize(static_alloc=True, static_shape=True)
+    acc_metric = SentenceAccuMetric(name="accu")
+    for n_batch, data_batch in enumerate(val_loader):
+        data, label, label_lengths = [x.as_in_context(ctx_list[0]).astype('f') for x in data_batch]
+        y = net(data)
+        acc_metric.update(labels=label, preds=y)
+    print(acc_metric.get())
+
+
+def inference(net, words_list, gpus=[6], score=0.0):
+    class TestDataset(object):
+        def __init__(self, root_dir="/data3/zyx/project/dianke_data/testimg"):
+            self.root_dir = root_dir
+            self.image_paths = [os.path.join(self.root_dir, x) for x in os.listdir(root_dir)]
+            self.image_paths.sort()
+
+        def __getitem__(self, idx):
+            def image_pad(img_ori, dshape=(48, 512)):
+                fscale = min(dshape[0] / img_ori.shape[0], dshape[1] / img_ori.shape[1])
+                img_resized = cv2.resize(img_ori, dsize=(0, 0), fx=fscale, fy=fscale)  # type: np.ndarray
+                img_padded = np.zeros(shape=(int(dshape[0]), int(dshape[1]), 3), dtype=np.float32)
+                img_padded[:img_resized.shape[0], :img_resized.shape[1], :img_resized.shape[2]] = img_resized
+                return img_padded
+
+            path = self.image_paths[idx]
+            image = cv2.imread(path)[:, :, ::-1]
+            return image_pad(image).transpose(2, 0, 1) / 255.0 - 0.5, idx
+
+        def __len__(self):
+            return len(self.image_paths)
+
+    test_dataset = TestDataset()
+    val_loader = mx.gluon.data.DataLoader(test_dataset, shuffle=False, batch_size=128, last_batch="keep")
+    ctx_list = [mx.gpu(x) for x in gpus]
+    net.collect_params().reset_ctx(ctx_list)
+    net.hybridize(static_alloc=True, static_shape=True)
+    import tqdm
+    with open("dianke_result-{:4f}-utf-8.txt".format(score), "wt", encoding="utf-8") as f:
+        for n_batch, data_batch in tqdm.tqdm(enumerate(val_loader)):
+            data, indices = [x.as_in_context(ctx_list[0]).astype('f') for x in data_batch]
+            preds = net(data)  # n x sequence_length x words
+            indices = indices.asnumpy().astype('i')
+            blank_word = preds.shape[2] - 1
+            preds = preds.argmax(axis=2).asnumpy().astype('i')
+            for p, idx in zip(preds, indices):
+                lw = -1
+                sen = []
+                for w in p:
+                    if lw != w:
+                        sen.append(w)
+                        lw = w
+                p = np.array(sen)
+                p = p[np.where(p != blank_word)]
+                p = list(p)
+                sentence = "".join([words_list[x - 1] for x in p])  # zero is reserved for unknown words.
+                image_path = test_dataset.image_paths[idx]
+                print("{} {}".format(os.path.basename(image_path)[:-4], sentence), file=f)
+
+
 if __name__ == '__main__':
     da = CRNNDataset()
     # print(len(da.words))
@@ -200,26 +266,24 @@ if __name__ == '__main__':
 
     logging.basicConfig(level=logging.INFO)
     net = CRNN(n_out=6000)
+    paths = ["/data3/zyx/yks/caption.mxnet/output/weight-82-12000-0.833.params",
+             "/data3/zyx/yks/caption.mxnet/output/weight-82-11000-0.849.params",
+             "output/weight-82-10000-0.804.params",
+             "output/weight-82-9000-0.819.params"
+             ]
+    params = {}
+    params_list = [mx.nd.load(x) for x in paths]
+    for k in params_list[0].keys():
+        nd_list = [x[k] for x in params_list]
+        param_sum = sum(nd_list[1: ], nd_list[0]) if len(nd_list) > 1 else nd_list[0]
+        net.collect_params()[k]._load_init(param_sum / len(params_list), ctx=mx.cpu())
+    net.collect_params().save("pretrained/weights-swa-0.738900.params")
+    exit()
     # loading parameters from torch
-    if False:
-        import torch
-        params_torch = torch.load("/data3/zyx/project/ocr/Recognization/saved_models_all/params-25-514_0.912_0.83.pkl")
-        params_torch_keys = list(filter(lambda x: "tracked" not in x, params_torch.keys()))
-        params_mx_keys = list(net.collect_params().keys())
-        for k, mk in zip(params_torch_keys, params_mx_keys):
-            param = params_torch[k].data.cpu().numpy()
-            try:
-                if "conv0_weight" in mk:
-                    param = mx.nd.array(param)
-                    param = param.repeat(axis=1, repeats=3)
-                net.collect_params()[mk]._load_init(mx.nd.array(param), ctx=mx.cpu())
-            except Exception as e:
-                logging.exception(e)
-                logging.warning("trying to restore {} from {} failed.".format(k, mk))
-                if "weight" in mk:
-                    net.collect_params()[mk].initialize(init=mx.init.Normal())
-                elif "bias" in mk:
-                    net.collect_params()[mk].initialize(init=mx.init.Zero())
-
-    net.initialize(init=mx.init.Normal())
-    train_crnn(net, CRNNDataset(max_sentence_length_pad=62))
+    # net.initialize(init=mx.init.Normal())
+    # train_crnn(net, CRNNDataset(max_sentence_length_pad=62))
+    train_dataset = CRNNDataset(max_sentence_length_pad=62)
+    val_dataset = CRNNDataset(csv_path="/data2/zyx/yks/dianke_ocr/dataset/val_set.csv",
+                              max_sentence_length_pad=62, words=train_dataset.words)
+    # validate(net, val_dataset=val_dataset, gpus=[6])
+    inference(net, words_list=train_dataset.words, gpus=[6], score=0.7389)
