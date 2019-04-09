@@ -256,34 +256,23 @@ def inference(net, words_list, gpus=[6], score=0.0):
                 image_path = test_dataset.image_paths[idx]
                 print("{} {}".format(os.path.basename(image_path)[:-4], sentence), file=f)
 
-
-if __name__ == '__main__':
-    da = CRNNDataset()
-    # print(len(da.words))
-    # print(da.max_sentences_len())
-    # da.viz()
-    # import tqdm
-
+def train_val_test():
+    import os
     logging.basicConfig(level=logging.INFO)
-    net = CRNN(n_out=6000)
-    paths = ["/data3/zyx/yks/caption.mxnet/output/weight-82-12000-0.833.params",
-             "/data3/zyx/yks/caption.mxnet/output/weight-82-11000-0.849.params",
-             "output/weight-82-10000-0.804.params",
-             "output/weight-82-9000-0.819.params"
-             ]
-    params = {}
-    params_list = [mx.nd.load(x) for x in paths]
-    for k in params_list[0].keys():
-        nd_list = [x[k] for x in params_list]
-        param_sum = sum(nd_list[1: ], nd_list[0]) if len(nd_list) > 1 else nd_list[0]
-        net.collect_params()[k]._load_init(param_sum / len(params_list), ctx=mx.cpu())
-    net.collect_params().save("pretrained/weights-swa-0.738900.params")
-    exit()
-    # loading parameters from torch
-    # net.initialize(init=mx.init.Normal())
-    # train_crnn(net, CRNNDataset(max_sentence_length_pad=62))
-    train_dataset = CRNNDataset(max_sentence_length_pad=62)
-    val_dataset = CRNNDataset(csv_path="/data2/zyx/yks/dianke_ocr/dataset/val_set.csv",
+    os.system("mkdir -p output")
+    gpu_id = 0
+    train_dataset = CRNNDataset(max_sentence_length_pad=62, 
+                                csv_path="/data2/zyx/yks/dianke_ocr/dataset/train_set.csv",
+                                image_path="/data2/zyx/yks/dianke_ocr/dataset/train_val_dataset")
+    val_dataset = CRNNDataset(csv_path="/data2/zyx/yks/dianke_ocr/dataset/train_set.csv",
+                              image_path="/data2/zyx/yks/dianke_ocr/dataset/train_val_dataset",
                               max_sentence_length_pad=62, words=train_dataset.words)
-    # validate(net, val_dataset=val_dataset, gpus=[6])
-    inference(net, words_list=train_dataset.words, gpus=[6], score=0.7389)
+    net = CRNN(n_out=6000)
+    net.initialize(init=mx.init.Normal())
+
+    train_crnn(net, train_dataset=train_dataset, gpus=[gpu_id])
+    validate(net, val_dataset=val_dataset, gpus=[gpu_id])
+    inference(net, words_list=train_dataset.words, gpus=[gpu_id], score=0.7389)
+
+if __name__ == "__main__":
+    train_val_test()
